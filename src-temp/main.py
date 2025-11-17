@@ -219,9 +219,14 @@ def run_toy_example():
     noisy_image = add_gaussian_noise(clean_image, sigma=0.15, seed=42)
     print(f"Noisy image range: [{noisy_image.min():.3f}, {noisy_image.max():.3f}]")
     
-    # Apply bilateral filter
+    # Apply bilateral filter (using more aggressive default parameters)
     print("\nApplying bilateral filter...")
-    filter_obj = BilateralFilterJAX(d=9, sigma_color=75.0, sigma_space=75.0)
+    # Default aggressive parameters for better noise reduction:
+    # - Larger filter diameter (d=11) for larger neighborhood
+    # - Lower sigma_color (30) for tighter intensity matching (more aggressive)
+    # - Higher sigma_space (100) for more spatial smoothing
+    filter_obj = BilateralFilterJAX(d=11, sigma_color=30.0, sigma_space=100.0)
+    print(f"  Filter parameters: d=11, sigma_color=30.0, sigma_space=100.0")
     
     # First run (JIT compilation)
     print("  First run (JIT compilation)...")
@@ -297,6 +302,9 @@ def benchmark_image(
     n_warmup: int = 5,
     n_runs: int = 20,
     save_images: bool = False,
+    filter_d: int = 11,
+    sigma_color: float = 30.0,
+    sigma_space: float = 100.0,
 ):
     """Benchmark denoising on a single image."""
     print("\n" + "="*60)
@@ -316,8 +324,13 @@ def benchmark_image(
     print(f"\nAdding Gaussian noise (sigma={noise_level})...")
     noisy_image = add_gaussian_noise(clean_3bit, sigma=noise_level, seed=42)
     
-    # Create filter
-    filter_obj = BilateralFilterJAX(d=9, sigma_color=75.0, sigma_space=75.0)
+    # Create filter with configurable parameters
+    filter_obj = BilateralFilterJAX(
+        d=filter_d,
+        sigma_color=sigma_color,
+        sigma_space=sigma_space
+    )
+    print(f"  Filter parameters: d={filter_d}, sigma_color={sigma_color}, sigma_space={sigma_space}")
     
     # Benchmark
     print("\nRunning benchmark...")
@@ -443,6 +456,9 @@ def main():
             n_warmup=args.n_warmup,
             n_runs=args.n_runs,
             save_images=args.save_images,
+            filter_d=args.filter_d,
+            sigma_color=args.sigma_color,
+            sigma_space=args.sigma_space,
         )
     else:
         parser.print_help()
