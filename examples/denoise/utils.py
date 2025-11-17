@@ -30,6 +30,34 @@ def add_noise(image, noise_level=0.15):
     return (noisy * 15).astype(np.uint8)
 
 
+def add_salt_pepper_noise(image, noise_level=0.15):
+    """Add salt and pepper noise to 4-bit image.
+
+    Args:
+        image: 4-bit image (values 0-15)
+        noise_level: Probability of a pixel being corrupted (half salt, half pepper)
+
+    Returns:
+        Noisy image with salt (15) and pepper (0) noise
+    """
+    noisy = image.copy()
+
+    # Generate random mask for noise
+    noise_mask = np.random.random(image.shape) < noise_level
+
+    # Split noise into salt and pepper
+    salt_mask = noise_mask & (np.random.random(image.shape) < 0.5)
+    pepper_mask = noise_mask & ~salt_mask
+
+    # Apply salt (max value = 15 for 4-bit)
+    noisy[salt_mask] = 15
+
+    # Apply pepper (min value = 0)
+    noisy[pepper_mask] = 0
+
+    return noisy
+
+
 def compute_metrics(original, noisy, denoised):
     """Compute PSNR metrics."""
     original_norm = original.astype(np.float32) / 15.0

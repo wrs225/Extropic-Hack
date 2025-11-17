@@ -82,11 +82,27 @@ def build_multilayer_checkerboard(flat_nodes, h, w, num_layers):
 class MultiLayerDenoiser:
     """Encapsulated 4-bit denoiser using multi-layer Ising machine."""
 
-    def __init__(self, h=256, w=256, num_bits=4, n_warmup=20, n_samples=10, steps_per_sample=5):
+    def __init__(self, h=256, w=256, num_bits=4, n_warmup=20, n_samples=10, steps_per_sample=5,
+                 alpha_coef=0.5, beta_coef=1.0, temperature=1.0):
+        """
+        Args:
+            h: Image height
+            w: Image width
+            num_bits: Number of bits (4 for 4-bit greyscale)
+            n_warmup: Number of warmup steps for sampling
+            n_samples: Number of samples to collect
+            steps_per_sample: Steps between samples
+            alpha_coef: Fidelity coefficient (α_b = alpha_coef * 2^b). Higher = more faithful to noisy input
+            beta_coef: Smoothness coefficient (β_b = beta_coef * 2^b). Higher = more smoothing
+            temperature: Temperature parameter (beta_inv). Higher = less aggressive optimization
+        """
         self.h = h
         self.w = w
         self.num_bits = num_bits
         self.num_layers = num_bits
+        self.alpha_coef = alpha_coef
+        self.beta_coef = beta_coef
+        self.temperature = temperature
 
         # Build unified multi-layer graph
         print("Building unified 4-layer, 4-connected graph...")
@@ -108,17 +124,20 @@ class MultiLayerDenoiser:
         # Create JIT-compiled denoising function
         self._denoise_jit = jax.jit(self._denoise_all_bitplanes)
 
-    def _denoise_all_bitplanes(self, key, noisy_bitplanes_array):
+    def _denoise_all_bitplanes(self, key, noisy_bitplanes_array, alpha_coef, beta_coef, temperature):
         """
         Denoise all 4 bit planes simultaneously.
 
         Uses bit-plane specific weights:
-        - α_b = 0.5 * 2^b (fidelity)
-        - β_b = 1.0 * 2^b (smoothness)
+        - α_b = alpha_coef * 2^b (fidelity)
+        - β_b = beta_coef * 2^b (smoothness)
 
         Args:
             key: JAX random key
             noisy_bitplanes_array: Shape (4, H, W) binary bit planes
+            alpha_coef: Fidelity coefficient
+            beta_coef: Smoothness coefficient
+            temperature: Temperature parameter
 
         Returns:
             Denoised bit planes, shape (4, H, W)
@@ -135,9 +154,9 @@ class MultiLayerDenoiser:
         all_noisy_flat = jnp.concatenate(all_noisy_flat)  # Shape: (4*H*W,)
 
         # Bit-plane specific weights
-        # α_b = 0.5 * 2^b, β_b = 1.0 * 2^b
-        alpha_values = jnp.array([0.5 * (2**b) for b in range(self.num_bits)])
-        beta_values = jnp.array([1.0 * (2**b) for b in range(self.num_bits)])
+        # α_b = alpha_coef * 2^b, β_b = beta_coef * 2^b
+        alpha_values = jnp.array([alpha_coef * (2**b) for b in range(self.num_bits)])
+        beta_values = jnp.array([beta_coef * (2**b) for b in range(self.num_bits)])
 
         # Build biases for all layers (fidelity to noisy input)
         biases_list = []
@@ -164,7 +183,7 @@ class MultiLayerDenoiser:
         weights = jnp.concatenate(weights_list)
 
         # Temperature
-        beta_inv = jnp.array(1.0, dtype=jnp.float32)
+        beta_inv = jnp.array(temperature, dtype=jnp.float32)
 
         # Create unified Ising model
         model = IsingEBM(self.flat_nodes, self.edges, biases, weights, beta_inv)
@@ -211,10 +230,26 @@ class MultiLayerDenoiser:
 
         return jnp.stack(denoised_bitplanes_avg), individual_samples
 
-    def denoise_image(self, noisy_img, key=None, warm_up=True, verbose=True):
-        """Denoise 4-bit image using unified multi-layer Ising model."""
+    def denoise_image(self, noisy_img, key=None, warm_up=True, verbose=True,
+                     alpha_coef=None, beta_coef=None, temperature=None):
+        """Denoise 4-bit image using unified multi-layer Ising model.
+
+        Args:
+            noisy_img: Noisy input image
+            key: JAX random key
+            warm_up: Whether to do warmup JIT compilation
+            verbose: Whether to print progress
+            alpha_coef: Override fidelity coefficient (uses default if None)
+            beta_coef: Override smoothness coefficient (uses default if None)
+            temperature: Override temperature (uses default if None)
+        """
         if key is None:
             key = jax.random.PRNGKey(42)
+
+        # Use instance defaults if not overridden
+        alpha_coef = alpha_coef if alpha_coef is not None else self.alpha_coef
+        beta_coef = beta_coef if beta_coef is not None else self.beta_coef
+        temperature = temperature if temperature is not None else self.temperature
 
         # Decompose into bit planes
         noisy_bitplanes = image_to_bitplanes(noisy_img, self.num_bits)
@@ -227,7 +262,7 @@ class MultiLayerDenoiser:
             if verbose:
                 print("  Warming up JIT (compiling)...", end='', flush=True)
             warmup_start = time.time()
-            _ = self._denoise_jit(key, noisy_bitplanes_array)
+            _ = self._denoise_jit(key, noisy_bitplanes_array, alpha_coef, beta_coef, temperature)
             _[0][0].block_until_ready()  # Force computation
             warmup_time = time.time() - warmup_start
             if verbose:
@@ -238,7 +273,7 @@ class MultiLayerDenoiser:
         denoise_start = time.time()
 
         # Denoise all at once - get averaged AND individual samples (now instant!)
-        denoised_bitplanes_array, individual_samples = self._denoise_jit(key, noisy_bitplanes_array)
+        denoised_bitplanes_array, individual_samples = self._denoise_jit(key, noisy_bitplanes_array, alpha_coef, beta_coef, temperature)
         denoised_bitplanes_array[0].block_until_ready()  # Force computation
 
         denoise_time = time.time() - denoise_start
