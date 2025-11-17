@@ -23,6 +23,52 @@ from thrml import SpinNode, Block, SamplingSchedule, sample_states
 from thrml.models import IsingEBM, IsingSamplingProgram
 
 
+# Utility functions for bit-plane decomposition and noise
+def image_to_bitplanes(img, num_bits=4):
+    """Decompose 4-bit image into binary bit planes."""
+    bitplanes = []
+    for bit in range(num_bits):
+        plane = (img >> bit) & 1
+        bitplanes.append(plane.astype(np.bool_))
+    return bitplanes
+
+
+def bitplanes_to_image(bitplanes):
+    """Recombine binary bit planes into image."""
+    img = np.zeros_like(bitplanes[0], dtype=np.uint8)
+    for bit, plane in enumerate(bitplanes):
+        img += (plane.astype(np.uint8) << bit)
+    return img
+
+
+def add_salt_pepper_noise(image, noise_level=0.15):
+    """Add salt and pepper noise to 4-bit image.
+
+    Args:
+        image: 4-bit image (values 0-15)
+        noise_level: Probability of a pixel being corrupted (half salt, half pepper)
+
+    Returns:
+        Noisy image with salt (15) and pepper (0) noise
+    """
+    noisy = image.copy()
+
+    # Generate random mask for noise
+    noise_mask = np.random.random(image.shape) < noise_level
+
+    # Split noise into salt and pepper
+    salt_mask = noise_mask & (np.random.random(image.shape) < 0.5)
+    pepper_mask = noise_mask & ~salt_mask
+
+    # Apply salt (max value = 15 for 4-bit)
+    noisy[salt_mask] = 15
+
+    # Apply pepper (min value = 0)
+    noisy[pepper_mask] = 0
+
+    return noisy
+
+
 # Image parameters
 H, W = 256, 256
 NUM_BITS = 4  # 4-bit greyscale
